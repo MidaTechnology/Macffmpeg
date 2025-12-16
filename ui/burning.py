@@ -2,9 +2,9 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
     QPushButton, QFileDialog, QProgressBar, 
     QMessageBox, QGroupBox, QSpinBox, QColorDialog, QLineEdit,
-    QFontComboBox
+    QFontComboBox, QComboBox, QGridLayout
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSettings
 from PyQt6.QtGui import QColor, QFont
 import signal
 import os
@@ -18,39 +18,45 @@ class BurningWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, video_path, subtitle_path, output_path, font_size, font_color, font_family):
+    def __init__(self, video_path, subtitle_path, output_path, config):
         super().__init__()
         self.video_path = video_path
         self.subtitle_path = subtitle_path
         self.output_path = output_path
-        self.font_size = font_size
-        self.font_color = font_color # QColor object
-        self.font_family = font_family
+        self.config = config # Dict containing all style params
         self.is_running = True
 
     def run(self):
         try:
             self.log.emit("Starting subtitle burning...")
             
+            font_color = self.config.get('font_color')
             # Convert color to FFmpeg format: &HBBGGRR&
-            ffmpeg_color = f"&H{self.font_color.blue():02X}{self.font_color.green():02X}{self.font_color.red():02X}&"
+            ffmpeg_color = f"&H{font_color.blue():02X}{font_color.green():02X}{font_color.red():02X}&"
             
-            # Escape paths for FFmpeg filter
+            # Escape paths
             srt_path_escaped = self.subtitle_path.replace(":", "\\:").replace("'", "'\\''")
             
-            # Escape font name for FFmpeg/libass
-            # We strictly escape spaces and colons which are special in filter strings
-            font_family_safe = self.font_family.replace(":", "\\:").replace("'", "")
+            # Escape font name
+            font_family = self.config.get('font_family', 'Arial')
+            font_family_safe = font_family.replace(":", "\\:").replace("'", "")
+            
+            # Extract other params
+            font_size = self.config.get('font_size', 24)
+            alignment = self.config.get('alignment', 2)
+            margin_v = self.config.get('margin_v', 10)
+            outline = self.config.get('outline', 1)
+            shadow = self.config.get('shadow', 1)
             
             # Construct Filter string
-            # We strictly quote the FontName value to handle spaces correctly in libass style string
-            # Enclose the whole style value in a way that respects the outer quoting
-            style = f"FontName={font_family_safe},FontSize={self.font_size},PrimaryColour={ffmpeg_color},Alignment=2,Outline=1,Shadow=1"
+            style = (f"FontName={font_family_safe},FontSize={font_size},PrimaryColour={ffmpeg_color},"
+                     f"Alignment={alignment},MarginV={margin_v},Outline={outline},Shadow={shadow}")
             
-            # Use strict quoting for the force_style option
             vf_string = f"subtitles='{srt_path_escaped}':force_style='{style}'"
             
-            self.log.emit(f"Using Font: {self.font_family}")
+            self.log.emit(f"Using Font: {font_family}")
+            self.log.emit(f"Font Size: {font_size}")
+            self.log.emit(f"Style Config: {style}")
             
             cmd = [
                 "ffmpeg",
@@ -60,11 +66,11 @@ class BurningWorker(QThread):
                 "-c:v", "h264_videotoolbox", # HW encoder
                 "-b:v", "6000k",
                 "-pix_fmt", "yuv420p", # Essential for compatibility
-                "-c:a", "aac", # Re-encode audio to AAC to ensure container compatibility
+                "-c:a", "aac", # Re-encode audio to AAC
                 self.output_path
             ]
             
-            self.log.emit(f"Executing FFmpeg command: {' '.join(cmd)}")
+            self.log.emit(f"Executing: {' '.join(cmd)}")
             
             process = subprocess.Popen(
                 cmd,
@@ -108,6 +114,7 @@ class BurningWorker(QThread):
 class SubtitleBurningPage(QWidget):
     def __init__(self):
         super().__init__()
+        self.settings = QSettings("MacWhisper", "Burning") # Persistence
         self.font_color = QColor(255, 255, 255) # Default White
         self.init_ui()
 
@@ -149,41 +156,68 @@ class SubtitleBurningPage(QWidget):
 
         # --- Styling ---
         style_group = QGroupBox("Subtitle Style")
-        style_layout = QHBoxLayout()
+        # Use Grid Layout for more controls
+        from PyQt6.QtWidgets import QGridLayout
+        style_layout = QGridLayout()
+        style_layout.setSpacing(15)
         
-        # Font Family
-        style_layout.addWidget(QLabel("Font:"))
+        # Row 0: Font & Size
+        style_layout.addWidget(QLabel("Font:"), 0, 0)
         self.font_combo = QFontComboBox()
-        self.font_combo.setFixedWidth(200)
-        # Try to set a good default for Chinese users on Mac
-        default_font = QFont("PingFang SC")
-        if default_font.exactMatch():
-            self.font_combo.setCurrentFont(default_font)
-        else:
-            # Fallback for other systems or if PingFang not found
-            self.font_combo.setCurrentFont(QFont("Arial Unicode MS"))
-            
-        style_layout.addWidget(self.font_combo)
+        style_layout.addWidget(self.font_combo, 0, 1)
         
-        # Font Size
-        style_layout.addWidget(QLabel("Size:"))
+        style_layout.addWidget(QLabel("Size:"), 0, 2)
         self.font_spin = QSpinBox()
-        self.font_spin.setRange(10, 100)
+        self.font_spin.setRange(10, 400) # Increased range for 4k
         self.font_spin.setValue(24)
-        style_layout.addWidget(self.font_spin)
-        
-        # Color
-        style_layout.addWidget(QLabel("Color:"))
+        style_layout.addWidget(self.font_spin, 0, 3)
+
+        # Row 1: Color & Alignment
+        style_layout.addWidget(QLabel("Color:"), 1, 0)
+        color_layout = QHBoxLayout()
         self.color_sample = QLabel("   ")
         self.color_sample.setFixedSize(30, 20)
         self.color_sample.setStyleSheet(f"background-color: {self.font_color.name()}; border: 1px solid #555;")
-        style_layout.addWidget(self.color_sample)
-        
+        color_layout.addWidget(self.color_sample)
         color_btn = QPushButton("Pick")
         color_btn.clicked.connect(self.pick_color)
-        style_layout.addWidget(color_btn)
+        color_layout.addWidget(color_btn)
+        style_layout.addLayout(color_layout, 1, 1)
+
+        style_layout.addWidget(QLabel("Align:"), 1, 2)
+        self.align_combo = QComboBox()
+        self.align_map = {
+            "Bottom Center": 2,
+            "Bottom Left": 1,
+            "Bottom Right": 3,
+            "Top Center": 6,
+            "Top Left": 5,
+            "Top Right": 7,
+            "Center": 10
+        }
+        self.align_combo.addItems(list(self.align_map.keys()))
+        style_layout.addWidget(self.align_combo, 1, 3)
+
+        # Row 2: Margins & Effects
+        style_layout.addWidget(QLabel("Margin V:"), 2, 0)
+        self.margin_spin = QSpinBox()
+        self.margin_spin.setRange(0, 1000)
+        self.margin_spin.setValue(10)
+        self.margin_spin.setSuffix(" px")
+        style_layout.addWidget(self.margin_spin, 2, 1)
         
-        style_layout.addStretch()
+        style_layout.addWidget(QLabel("Outline:"), 2, 2)
+        self.outline_spin = QSpinBox()
+        self.outline_spin.setRange(0, 20)
+        self.outline_spin.setValue(1)
+        style_layout.addWidget(self.outline_spin, 2, 3)
+        
+        style_layout.addWidget(QLabel("Shadow:"), 3, 2)
+        self.shadow_spin = QSpinBox()
+        self.shadow_spin.setRange(0, 20)
+        self.shadow_spin.setValue(1)
+        style_layout.addWidget(self.shadow_spin, 3, 3)
+        
         style_group.setLayout(style_layout)
         layout.addWidget(style_group)
 
@@ -219,6 +253,9 @@ class SubtitleBurningPage(QWidget):
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Ready...")
         layout.addWidget(self.log_output)
+        
+        # Load saved settings
+        self.load_settings()
 
     def select_video(self):
         f, _ = QFileDialog.getOpenFileName(self, "Select Video", "", "Video Files (*.mp4 *.mov *.mkv *.avi)")
@@ -245,6 +282,9 @@ class SubtitleBurningPage(QWidget):
             self.color_sample.setStyleSheet(f"background-color: {color.name()}; border: 1px solid #555;")
 
     def start_burning(self):
+        # Save current settings
+        self.save_settings()
+        
         # Use temp dir for intermediate file
         _, ext = os.path.splitext(self.video_path)
         self.temp_output = os.path.join(tempfile.gettempdir(), f"macwhisper_burn_{os.getpid()}{ext}")
@@ -255,20 +295,67 @@ class SubtitleBurningPage(QWidget):
         self.save_btn.setEnabled(False)
         self.log_output.setText("Burning in progress...")
         
-        font_family = self.font_combo.currentFont().family()
+        # Gather Config
+        config = {
+            'font_family': self.font_combo.currentFont().family(),
+            'font_size': self.font_spin.value(),
+            'font_color': self.font_color,
+            'alignment': self.align_map.get(self.align_combo.currentText(), 2),
+            'margin_v': self.margin_spin.value(),
+            'outline': self.outline_spin.value(),
+            'shadow': self.shadow_spin.value()
+        }
         
         self.worker = BurningWorker(
             self.video_path, 
             self.subtitle_path, 
             self.temp_output, 
-            self.font_spin.value(),
-            self.font_color,
-            font_family
+            config
         )
         self.worker.log.connect(self.log_output.setText)
         self.worker.finished.connect(self.on_finished)
         self.worker.error.connect(self.on_error)
         self.worker.start()
+
+    def save_settings(self):
+        self.settings.setValue("font_family", self.font_combo.currentFont().family())
+        self.settings.setValue("font_size", self.font_spin.value())
+        self.settings.setValue("font_color", self.font_color.name())
+        self.settings.setValue("alignment_idx", self.align_combo.currentIndex())
+        self.settings.setValue("margin_v", self.margin_spin.value())
+        self.settings.setValue("outline", self.outline_spin.value())
+        self.settings.setValue("shadow", self.shadow_spin.value())
+
+    def load_settings(self):
+        # Font Family
+        fam = self.settings.value("font_family")
+        if fam:
+            self.font_combo.setCurrentFont(QFont(fam))
+        else:
+             # Default Fallback if no setting
+             default_font = QFont("PingFang SC")
+             if default_font.exactMatch():
+                self.font_combo.setCurrentFont(default_font)
+             else:
+                self.font_combo.setCurrentFont(QFont("Arial Unicode MS"))
+
+        # Font Size
+        size = self.settings.value("font_size", 24)
+        self.font_spin.setValue(int(size))
+        
+        # Color
+        col_name = self.settings.value("font_color", "#FFFFFF")
+        self.font_color = QColor(col_name)
+        self.color_sample.setStyleSheet(f"background-color: {self.font_color.name()}; border: 1px solid #555;")
+        
+        # Alignment
+        idx = self.settings.value("alignment_idx", 0)
+        self.align_combo.setCurrentIndex(int(idx))
+        
+        # Margins & Effects
+        self.margin_spin.setValue(int(self.settings.value("margin_v", 10)))
+        self.outline_spin.setValue(int(self.settings.value("outline", 1)))
+        self.shadow_spin.setValue(int(self.settings.value("shadow", 1)))
 
     def stop_burning(self):
         if hasattr(self, 'worker') and self.worker.isRunning():
