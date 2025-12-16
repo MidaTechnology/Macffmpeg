@@ -58,13 +58,26 @@ class BurningWorker(QThread):
             self.log.emit(f"Font Size: {font_size}")
             self.log.emit(f"Style Config: {style}")
             
+            # Auto-detect encoder based on architecture
+            import platform
+            arch = platform.machine()
+            if arch == 'arm64':
+                encoder = "h264_videotoolbox"
+                encoder_opts = ["-b:v", "6000k"]
+                self.log.emit("Detected Apple Silicon (arm64): Using Hardware Acceleration")
+            else:
+                encoder = "libx264"
+                # CRF 23 is standard for high quality, preset fast for speed
+                encoder_opts = ["-crf", "23", "-preset", "fast"] 
+                self.log.emit(f"Detected Intel ({arch}): Using CPU Software Encoding (Compatibility Mode)")
+            
             cmd = [
                 "ffmpeg",
                 "-y", # Overwrite output
                 "-i", self.video_path,
                 "-vf", vf_string,
-                "-c:v", "h264_videotoolbox", # HW encoder
-                "-b:v", "6000k",
+                "-c:v", encoder,
+            ] + encoder_opts + [
                 "-pix_fmt", "yuv420p", # Essential for compatibility
                 "-c:a", "aac", # Re-encode audio to AAC
                 self.output_path
