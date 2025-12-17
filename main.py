@@ -1,7 +1,9 @@
 import sys
+import os
+import traceback
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, 
-    QListWidget, QStackedWidget
+    QListWidget, QStackedWidget, QMessageBox
 )
 from PyQt6.QtCore import QSettings
 
@@ -200,7 +202,40 @@ class MainWindow(QMainWindow):
         """)
 
 if __name__ == '__main__':
+    # 1. Environment Fix
+    # GUI apps launched from Finder often don't have /usr/local/bin or /opt/homebrew/bin in PATH
+    os.environ["PATH"] += os.pathsep + "/usr/local/bin" + os.pathsep + "/opt/homebrew/bin"
+
     app = QApplication(sys.argv)
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec())
+    
+    # 2. Global Exception Handler
+    # This prevents "silent" crashes in the bundled app by showing a dialog
+    def handle_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        
+        err_msg = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+        
+        # Ensure QApplication instance exists
+        if not QApplication.instance():
+             _ = QApplication(sys.argv)
+
+        # Show Error Dialog
+        msg = QMessageBox()
+        msg.setIcon(QMessageBox.Icon.Critical)
+        msg.setText("Application Crashed")
+        msg.setInformativeText(str(exc_value))
+        msg.setDetailedText(err_msg)
+        msg.setWindowTitle("Error")
+        msg.exec()
+
+    sys.excepthook = handle_exception
+
+    try:
+        window = MainWindow()
+        window.show()
+        sys.exit(app.exec())
+    except Exception as e:
+        # Fallback for errors
+        sys.excepthook(type(e), e, e.__traceback__)
