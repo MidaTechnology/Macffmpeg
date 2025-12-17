@@ -173,7 +173,14 @@ class TranslationPage(QWidget):
 
         # Provider Selection
         self.provider_combo = QComboBox()
+        self.provider_combo.currentIndexChanged.connect(self.update_models)
         control_layout.addRow("Service Provider:", self.provider_combo)
+
+        # Model Selection (New)
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True) # Allow custom entry
+        self.model_combo.setPlaceholderText("Select or type model name")
+        control_layout.addRow("Model:", self.model_combo)
 
         # Language
         self.lang_combo = QComboBox()
@@ -187,25 +194,23 @@ class TranslationPage(QWidget):
         control_group.setLayout(control_layout)
         layout.addWidget(control_group)
 
-        # Action
+        # Action (Keep existing code)
         self.translate_btn = QPushButton("Start Translation")
         self.translate_btn.setObjectName("primaryButton")
         self.translate_btn.clicked.connect(self.start_translation)
         self.translate_btn.setEnabled(False)
         layout.addWidget(self.translate_btn)
-
-        # Progress
+        
+        # ... (Progress, Logs, Save UI code remains the same) ...
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         layout.addWidget(self.progress_bar)
 
-        # Logs & Output
         self.log_output = QTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setPlaceholderText("Translation progress and preview will appear here...")
         layout.addWidget(self.log_output)
 
-        # Save
         save_layout = QHBoxLayout()
         self.save_btn = QPushButton("Save Translated SRT")
         self.save_btn.clicked.connect(self.save_file)
@@ -217,6 +222,7 @@ class TranslationPage(QWidget):
         self.refresh_providers()
 
     def refresh_providers(self):
+        self.provider_combo.blockSignals(True) # Prevent premature triggering
         self.provider_combo.clear()
         import json
         
@@ -227,15 +233,14 @@ class TranslationPage(QWidget):
         except:
             service_configs = {}
 
-        # Load Custom Services List to map keys to names
+        # Load Custom Services List
         custom_services_str = self.settings.value("custom_services_list", "[]")
         try:
             custom_services = json.loads(custom_services_str)
         except:
             custom_services = []
             
-        # Name Mapping (Key -> Friendly Name)
-        # Default known services
+        # Name Mapping
         name_map = {
             "deepseek": "DeepSeek",
             "openai": "OpenAI",
@@ -245,28 +250,67 @@ class TranslationPage(QWidget):
             "deeplx": "DeepLX",
             "ollama": "Ollama"
         }
-        # Update with Custom Services
         for cs in custom_services:
             name_map[cs["key"]] = cs["name"]
 
         # Populate Combo Box
         count = 0
         for service_key, config in service_configs.items():
-            if not config: continue # Skip empty configs
+            if not config: continue
             
-            # Determine display name
             display_name = name_map.get(service_key, service_key.capitalize())
-            
-            # Check if this service has enough info (API Key or similar)
-            # Just a basic check, real validation happens at runtime
             has_creds = any(k in config for k in ["api_key", "app_id", "access_key", "endpoint", "base_url"])
-            
             if has_creds:
                 self.provider_combo.addItem(display_name, userData={"key": service_key, "config": config})
                 count += 1
             
         if count == 0:
-             self.provider_combo.addItem("No Configured Services Found (Go to API Keys)", userData=None)
+             self.provider_combo.addItem("No Configured Services Found", userData=None)
+
+        self.provider_combo.blockSignals(False)
+        # Trigger update for initial selection (if items exist)
+        if self.provider_combo.count() > 0:
+            self.update_models()
+
+    def update_models(self):
+        self.model_combo.clear()
+        data = self.provider_combo.currentData()
+        if not data or not isinstance(data, dict):
+            return
+
+        service_key = data.get("key")
+        config = data.get("config", {})
+        
+        # 1. Configured Model (Highest Priority)
+        configured_model = config.get("model", "").strip()
+        
+        known_models = []
+        # 2. Add common known models based on provider type
+        if "deepseek" in service_key:
+            known_models = ["deepseek-chat", "deepseek-coder"]
+        elif "openai" in service_key:
+            known_models = ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo", "gpt-4o"]
+        elif "ollama" in service_key:
+            known_models = ["llama2", "mistral", "mixtral"]
+        
+        # Add to Combo Box
+        items_to_add = []
+        if configured_model:
+            items_to_add.append(configured_model)
+        
+        for m in known_models:
+            if m != configured_model:
+                items_to_add.append(m)
+        
+        # If absolutely nothing, add a generic fallback
+        if not items_to_add:
+            items_to_add = ["gpt-3.5-turbo"]
+            
+        self.model_combo.addItems(items_to_add)
+        
+        # Select the first one (configured model)
+        if self.model_combo.count() > 0:
+            self.model_combo.setCurrentIndex(0)
 
     def showEvent(self, event):
         # Refresh providers whenever tab is shown to catch updates
@@ -292,25 +336,14 @@ class TranslationPage(QWidget):
         service_key = item_data.get("key")
         config = item_data.get("config", {})
         
-        # Extract fields based on service type logic (Unified mainly for OpenAI/DeepSeek currently)
-        # For this version, we support generic OpenAI-compatible services primarily
         api_key = config.get("api_key", "")
-        # Fallback for some specific ones if needed, but 'api_key' is standard for new config
-        
         target_lang = self.lang_combo.currentText()
         
-        # Get Model and Base URL directly from config
-        model_name = config.get("model", "").strip()
-        base_url = config.get("base_url", "").strip()
+        # Get Model from COMBO BOX, not just config
+        model_name = self.model_combo.currentText().strip()
         
-        # Smart Defaults if missing in config
-        if not model_name:
-            if service_key == "deepseek":
-                model_name = "deepseek-chat"
-            elif service_key == "openai":
-                model_name = "gpt-3.5-turbo"
-            else:
-                model_name = "gpt-3.5-turbo" # Fallback
+        # Base URL still from config
+        base_url = config.get("base_url", "").strip()
         
         # DeepSeek specific default URL if missing
         if service_key == "deepseek" and not base_url:
@@ -331,7 +364,6 @@ class TranslationPage(QWidget):
         self.log_output.append("-" * 30)
         
         self.worker = TranslationWorker(api_key, self.file_path, target_lang, model=model_name, base_url=base_url)
-
         self.worker.log.connect(self.log_output.append)
         self.worker.progress.connect(self.progress_bar.setValue)
         self.worker.finished.connect(self.handle_finished)
