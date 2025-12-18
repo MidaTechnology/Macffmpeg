@@ -67,9 +67,17 @@ EOF
 
 # 5. Run PyInstaller
 echo "🔨 Building .app bundle..."
-# Note: We removed the explicit core lib add (--add-binary $QT_PATH/lib/*) to avoid conflicts
-# But we KEEP plugins and translations to ensure they exist for the hook.
+# Automatically collect all files in whisper/assets directory
+ASSETS_DIR="./venv/lib/python3.13/site-packages/whisper/assets"
+if [ -d "$ASSETS_DIR" ]; then
+    for file in "$ASSETS_DIR"/*; do
+        ASSET_PATHS+="--add-data=$file:whisper/assets "
+    done
+fi
+
+# Updated PyInstaller command with dynamic asset paths
 pyinstaller --noconfirm --name "$APP_NAME" --windowed --contents-directory "." \
+    $ASSET_PATHS \
     --add-data "$QT_PATH/translations:./$QT_FOLDER/translations" \
     --add-binary "$QT_PATH/plugins/*:./$QT_FOLDER/plugins" \
     --hidden-import="PyQt6" \
