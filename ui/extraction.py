@@ -1,5 +1,6 @@
 import os
 import shutil
+import subprocess  # 替代 ffmpeg 模块
 from whisper import _MODELS as WHISPER_MODELS
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, 
@@ -90,8 +91,38 @@ class ExtractionPage(QWidget):
         if file_name:
             self.file_path = file_name
             self.file_path_label.setText(os.path.basename(file_name))
-            self.extract_btn.setEnabled(True)
-            self.log_output.append(f"Selected file: {file_name}")
+            
+            # 检查是否包含音频流
+            if self.has_audio_stream(file_name):
+                self.extract_btn.setEnabled(True)
+                self.log_output.append(f"Selected file: {file_name}")
+            else:
+                self.extract_btn.setEnabled(False)
+                self.log_output.append(f"Error: No audio stream found in the selected file: {file_name}")
+                QMessageBox.warning(self, "No Audio Stream", "The selected file does not contain an audio stream.")
+
+    def has_audio_stream(self, file_name):
+        try:
+            # 调用 ffmpeg 命令获取文件的流信息
+            result = subprocess.run(
+                ["ffmpeg", "-i", file_name],
+                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                text=True
+            )
+            output = result.stderr  # ffmpeg 的流信息通常输出到 stderr
+
+            # 检查是否存在音频流
+            if "Audio:" in output:
+                return True
+            return False
+        except FileNotFoundError:
+            self.log_output.append("Error: ffmpeg is not installed or not in PATH.")
+            QMessageBox.critical(self, "Error", "ffmpeg is not installed or not in PATH.")
+            return False
+        except Exception as e:
+            self.log_output.append(f"Error checking audio stream: {e}")
+            return False
 
     def start_extraction(self):
         if not hasattr(self, 'file_path'):
@@ -121,7 +152,12 @@ class ExtractionPage(QWidget):
     def handle_error(self, error_msg):
         self.set_ui_busy(False)
         self.progress_bar.setVisible(False)
-        QMessageBox.critical(self, "Error", f"An error occurred:\n{error_msg}")
+        
+        if "No audio stream" in error_msg:
+            QMessageBox.warning(self, "No Audio Stream", "The selected file does not contain an audio stream.")
+        else:
+            QMessageBox.critical(self, "Error", f"An error occurred:\n{error_msg}")
+        
         self.log_output.append(f"Error: {error_msg}")
 
     def handle_finished(self, result):
